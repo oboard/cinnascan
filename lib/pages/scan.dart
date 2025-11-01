@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:cinnascan/scanners/scan_manager.dart';
 import 'package:cinnascan/scanners/base_scanner.dart';
 import 'package:cinnascan/widgets/scanner_selection_dialog.dart';
@@ -28,18 +29,24 @@ class ScanPage extends StatefulWidget {
 class _ScanPageState extends State<ScanPage> {
   final ScanManager _scanManager = ScanManager();
   List<LocalNetworkInterface> _networkInterfaces = [];
-  List<ScanResult> _discoveredDevices = [];
+  final List<ScanResult> _discoveredDevices = [];
   bool _isScanning = false;
   double _scanProgress = 0.0;
   String _currentScanIP = '';
-  List<String> _debugMessages = [];
+  final List<String> _debugMessages = [];
   bool _showDebugInfo = false;
   Timer? _quickScanTimer;
   StreamSubscription? _scanSubscription;
 
+  // 网络连接监听相关
+  final Connectivity _connectivity = Connectivity();
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  List<ConnectivityResult> _connectionStatus = [ConnectivityResult.none];
+
   @override
   void initState() {
     super.initState();
+    _initConnectivityListener();
     _loadNetworkInterfaces();
     _startQuickScan();
   }
@@ -48,6 +55,7 @@ class _ScanPageState extends State<ScanPage> {
   void dispose() {
     _quickScanTimer?.cancel();
     _scanSubscription?.cancel();
+    _connectivitySubscription?.cancel();
     super.dispose();
   }
 
@@ -468,6 +476,80 @@ class _ScanPageState extends State<ScanPage> {
         ),
       ),
     );
+  }
+
+  /// 初始化网络连接状态监听器
+  Future<void> _initConnectivityListener() async {
+    try {
+      // 获取初始连接状态
+      _connectionStatus = await _connectivity.checkConnectivity();
+      _addDebugMessage(
+        '初始网络状态: ${_getConnectivityStatusText(_connectionStatus)}',
+      );
+
+      // 监听网络连接状态变化
+      _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
+        _onConnectivityChanged,
+        onError: (error) {
+          _addDebugMessage('网络状态监听错误: $error');
+        },
+      );
+    } catch (e) {
+      _addDebugMessage('初始化网络监听失败: $e');
+    }
+  }
+
+  /// 处理网络连接状态变化
+  void _onConnectivityChanged(List<ConnectivityResult> result) {
+    setState(() {
+      _connectionStatus = result;
+    });
+
+    final statusText = _getConnectivityStatusText(result);
+    _addDebugMessage('网络状态变化: $statusText');
+
+    // 当网络状态发生变化时，重新加载网络接口
+    if (result.any((status) => status != ConnectivityResult.none)) {
+      _addDebugMessage('检测到网络连接，正在重新加载网络接口...');
+      // 延迟一秒后重新加载，给系统时间来稳定网络配置
+      Future.delayed(const Duration(seconds: 1), () {
+        _loadNetworkInterfaces();
+      });
+    } else {
+      _addDebugMessage('网络连接断开');
+      // 清空网络接口列表
+      setState(() {
+        _networkInterfaces.clear();
+      });
+    }
+  }
+
+  /// 获取网络连接状态的文本描述
+  String _getConnectivityStatusText(List<ConnectivityResult> results) {
+    if (results.isEmpty || results.contains(ConnectivityResult.none)) {
+      return '无网络连接';
+    }
+
+    final statusTexts = results.map((result) {
+      switch (result) {
+        case ConnectivityResult.wifi:
+          return 'WiFi';
+        case ConnectivityResult.ethernet:
+          return '以太网';
+        case ConnectivityResult.mobile:
+          return '移动网络';
+        case ConnectivityResult.bluetooth:
+          return '蓝牙';
+        case ConnectivityResult.vpn:
+          return 'VPN';
+        case ConnectivityResult.other:
+          return '其他';
+        case ConnectivityResult.none:
+          return '无连接';
+      }
+    }).toList();
+
+    return statusTexts.join(', ');
   }
 
   Future<void> _loadNetworkInterfaces() async {
